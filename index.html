@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>カウント29 (Stable Online Edition)</title>
+    <title>カウント29 (企画書完全準拠版)</title>
     <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
     <style>
         body { font-family: 'Arial', sans-serif; background-color: #2c3e50; color: #ecf0f1; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
@@ -22,12 +22,12 @@
         #board { text-align: center; padding: 25px; background: #16a085; border-radius: 8px; margin-bottom: 20px; }
         #total-display { font-size: 4em; font-weight: bold; color: #fff; }
         #last-change { font-size: 1.2em; color: #f1c40f; height: 24px; margin-top: 5px; }
-        #log-panel { background: #1a252f; padding: 10px; height: 120px; overflow-y: auto; border-radius: 5px; font-family: monospace; font-size: 0.95em; margin-bottom: 20px; }
+        #log-panel { background: #1a252f; padding: 10px; height: 140px; overflow-y: auto; border-radius: 5px; font-family: monospace; font-size: 0.95em; margin-bottom: 20px; }
         .log-entry { margin-bottom: 4px; border-left: 3px solid #3498db; padding-left: 5px; }
         .log-attack { border-left-color: #e74c3c; color: #ff7675; }
         .log-success { border-left-color: #2ecc71; color: #55efc4; }
         #player-hand-container { background: #2c3e50; padding: 15px; border-radius: 8px; text-align: center; }
-        .cards-row { display: flex; justify-content: center; gap: 15px; margin-top: 10px; min-height: 120px; }
+        .cards-row { display: flex; justify-content: center; gap: 15px; margin-top: 10px; min-height: 120px; flex-wrap: wrap; }
         .card { width: 80px; height: 120px; background: white; color: black; border-radius: 8px; display: flex; flex-direction: column; justify-content: space-between; padding: 10px; box-sizing: border-box; font-weight: bold; font-size: 1.2em; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2); transition: transform 0.2s; user-select: none; }
         .card:hover { transform: translateY(-10px); }
         .card.red { color: #d63031; }
@@ -39,7 +39,7 @@
 </head>
 <body>
 
-    <h1>カウント29 (安定通信オンライン版)</h1>
+    <h1>カウント29 (企画書完全準拠版)</h1>
 
     <div id="setup-container">
         <h3>👥 ルーム接続設定</h3>
@@ -48,11 +48,11 @@
             <input type="text" id="username-input" value="プレイヤー">
         </div>
         <div class="input-group">
-            <label>共通のルームID (適当な英数字): </label>
-            <input type="text" id="room-input" value="room29_test">
+            <label>共通のルームID: </label>
+            <input type="text" id="room-input" value="room29_stable">
             <button id="btn-connect" onclick="connectToRoom()">ルームに入る</button>
         </div>
-        <div id="lobby-status">ルーム情報を入力してボタンを押してください。</div>
+        <div id="lobby-status">ルーム情報を入力して「ルームに入る」を押してください。</div>
         <div id="member-list" style="margin-top: 10px; color: #f1c40f;"></div>
         <button id="btn-start" style="display:none; margin-top:15px; background:#2ecc71;" onclick="hostStartGame()">全員揃ったのでゲームを開始する</button>
     </div>
@@ -86,7 +86,7 @@
         let myName = "";
         let topicRoom = "";
         let isHost = false;
-        let members = []; // ルームにいる全プレイヤーのリスト
+        let members = []; 
 
         let gameState = {
             players: [],
@@ -113,18 +113,16 @@
             let rawRoom = document.getElementById('room-input').value.trim();
             if(!myName || !rawRoom) return alert("名前とルームIDを入力してください");
 
-            topicRoom = "count29/rooms/" + rawRoom;
+            topicRoom = "count29/stable_rooms/" + rawRoom;
             document.getElementById('btn-connect').disabled = true;
-            document.getElementById('lobby-status').innerText = "通信サーバー（ブラウザ共有ブローカー）に接続中...";
+            document.getElementById('lobby-status').innerText = "通信サーバーに接続中...";
 
-            // セキュリティ制限に引っかからない、暗号化WebSocket(WSS)経由での接続
             client = mqtt.connect("wss://broker.emqx.io:8084/mqtt");
 
             client.on('connect', () => {
-                document.getElementById('lobby-status').innerText = "🟢 サーバー接続完了！ルーム内で待機中...";
+                document.getElementById('lobby-status').innerText = "🟢 接続完了！他のプレイヤーを待っています...";
                 client.subscribe(topicRoom);
                 
-                // 定期的に自分の存在をアピールして、一番古参のプレイヤーが自動的に「ホスト(親)」を担当する
                 setInterval(() => {
                     sendNet({ type: 'PING', peerId: myId, name: myName });
                 }, 1000);
@@ -151,11 +149,9 @@
                 } else {
                     existing.lastSeen = Date.now();
                 }
-                // 生存確認
                 members = members.filter(m => Date.now() - m.lastSeen < 3000);
-                members.sort((a,b) => a.peerId.localeCompare(b.peerId)); // 順序を固定化
+                members.sort((a,b) => a.peerId.localeCompare(b.peerId)); 
                 
-                // 部屋内でID順が一番最初の人が自動でホスト(親権限)を持つ
                 if (members[0].peerId === myId) {
                     if (!isHost) {
                         isHost = true;
@@ -188,19 +184,21 @@
             document.getElementById('member-list').innerText = "部屋にいる人: " + names.join(', ');
         }
 
-        // --- ゲーム管理（ホストロジック） ---
+        // --- ホスト側ゲーム進行システム ---
         function hostStartGame() {
-            if(members.length < 2) return alert("対戦には最低2人以上必要です。同じルームIDを別のブラウザやスマホでも入力してください。");
+            if(members.length < 2) return alert("対戦には最低2人以上必要です。");
             
             sendNet({ type: 'START_GAME' });
 
-            // 山札初期化
+            // 山札52枚の生成
             hostDeck = [];
             SUITS.forEach(s => {
                 VALUES.forEach((v, idx) => {
-                    hostDeck.push({ suit: s, isRed: (s==='♥'||s==='♦'), text: v, power: (idx+1) });
+                    let power = idx + 1;
+                    hostDeck.push({ suit: s, isRed: (s==='♥'||s==='♦'), text: v, power: power });
                 });
             });
+            
             // シャッフル
             for (let i = hostDeck.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
@@ -222,7 +220,7 @@
             gameState.isOver = false;
 
             hostSync();
-            hostLog("🃏 ゲームの準備が整いました。最初のプレイヤーのターンです！");
+            hostLog("🃏 ゲームスタート！各自に4枚ずつカードが配られました。最初の人の手番です。");
         }
 
         function hostSync() {
@@ -242,27 +240,29 @@
 
             let currentHand = hostSaveHands[peerId];
             let card = currentHand.splice(cardIdx, 1)[0];
-            hostDiscard.push(card);
+            hostDiscard.push(card); // 出されたカードは捨て札置き場へ
 
+            // --- ジャスト29アタックへの対応（回避モード） ---
             if (gameState.isAttackMode) {
                 if (card.text === '10') {
                     gameState.currentTotal = 19;
                     gameState.lastAddedValue = -10;
                     gameState.isAttackMode = false;
-                    hostLog(`💥 ${activePlayer.name} は「10」を提出して合計値を19に下げ、アタックを回避！`, "log-success");
+                    hostLog(`💥 ${activePlayer.name} は「10」を1枚出して合計値を19に下げ、アタックを回避！`, "log-success");
                     hostDraw(peerId);
                     hostNextTurn();
                 } else if (card.text === 'Q') {
-                    hostLog(`🔄 ${activePlayer.name} は「Q」でアタックを仕掛け返した！`, "log-attack");
+                    hostLog(`🔄 ${activePlayer.name} は「Q」を1枚出してアタックをそのまま跳ね返した！`, "log-attack");
                     let target = gameState.attackerIdx;
                     gameState.attackerIdx = gameState.currentTurnIdx;
-                    gameState.currentTurnIdx = target;
+                    gameState.currentTurnIdx = target; // アタックを仕掛けたプレイヤーに手番を戻す
                     hostDraw(peerId);
                     hostSync();
                 }
                 return;
             }
 
+            // --- 通常時の処理（必ず1枚ずつ処理） ---
             let desc = "";
             if (card.power >= 1 && card.power <= 9) {
                 gameState.currentTotal += card.power;
@@ -274,40 +274,49 @@
                 desc = `${option10 > 0 ? '+' : ''}${option10}`;
             } else if (card.text === 'J') {
                 gameState.currentTotal += gameState.lastAddedValue;
-                desc = `直前の値[${gameState.lastAddedValue}]をコピー加算`;
+                desc = `直前の数字 [${gameState.lastAddedValue}] をコピー加算`;
             } else if (card.text === 'Q') {
                 gameState.playDirection *= -1;
-                desc = `順番を反転`;
+                desc = `順番を逆回りに変更`;
             } else if (card.text === 'K') {
-                desc = `数値をキープして1枚ドロー`;
-                hostDraw(peerId);
+                desc = `数値をキープして山札からカードを1枚追加ドロー`;
+                hostDraw(peerId); // Kの効果による追加ドロー
             }
 
-            hostLog(`📝 ${activePlayer.name}: 「${card.suit}${card.text}」 ➔ ${desc} (現在値: ${gameState.currentTotal})`);
+            hostLog(`📝 ${activePlayer.name}: 「${card.suit}${card.text}」を1枚提出 ➔ ${desc} (現在値: ${gameState.currentTotal})`);
 
+            // --- 判定ロジック ---
             if (gameState.currentTotal > 29) {
                 hostLog(`💀 ${activePlayer.name} が29を超えました！(オーバー29)`, "log-attack");
                 hostReduceLife(gameState.currentTurnIdx);
             } else if (gameState.currentTotal === 29) {
                 gameState.isAttackMode = true;
                 gameState.attackerIdx = gameState.currentTurnIdx;
-                hostLog(`⚡ ジャスト29アタック！ 次のプレイヤーは【10】か【Q】が必要です！`, "log-attack");
+                hostLog(`⚡ ジャスト29アタック成立！次の人は【10】または【Q】を1枚出して回避・反撃してください！`, "log-attack");
+                
+                // 次の生存プレイヤーへアタック対象を移行
                 do {
                     gameState.currentTurnIdx = (gameState.currentTurnIdx + gameState.playDirection + gameState.players.length) % gameState.players.length;
                 } while (gameState.players[gameState.currentTurnIdx].hp <= 0);
-                hostDraw(peerId);
+                
+                hostDraw(peerId); // ターン終了時の通常ドロー
                 hostSync();
             } else {
-                hostDraw(peerId);
+                hostDraw(peerId); // ターン終了時の通常ドロー
                 hostNextTurn();
             }
         }
 
         function hostDraw(peerId) {
             if (hostDeck.length === 0) {
-                hostDeck = [...hostDiscard]; hostDiscard = [];
-                for(let i=hostDeck.length-1; i>0; i--) { const j=Math.floor(Math.random()*(i+1)); [hostDeck[i],hostDeck[j]]=[hostDeck[j],hostDeck[i]]; }
-                hostLog("🔮 山札リフレッシュ: 既に出されたカードを混ぜ直しました。");
+                // 企画書準拠：捨て札置き場（オープン情報）のカードをシャッフルして新しい山札にする
+                hostDeck = [...hostDiscard]; 
+                hostDiscard = [];
+                for(let i=hostDeck.length-1; i>0; i--) { 
+                    const j=Math.floor(Math.random()*(i+1)); 
+                    [hostDeck[i],hostDeck[j]]=[hostDeck[j],hostDeck[i]]; 
+                }
+                hostLog("🔮 山札がなくなったため、捨て札をシャッフルして山札をリフレッシュしました。");
             }
             hostSaveHands[peerId].push(hostDeck.pop());
         }
@@ -324,27 +333,32 @@
             gameState.players[idx].hp--;
             if (hostCheckOver()) return;
 
+            // 企画書準拠のラウンドリセット処理
             gameState.currentTotal = 0;
             gameState.lastAddedValue = 0;
             gameState.isAttackMode = false;
             gameState.attackerIdx = -1;
 
+            // 各プレイヤーの手札が4枚になるように山札から補充
             gameState.players.forEach(p => {
-                if(p.hp > 0) { while(hostSaveHands[p.peerId].length < 4) hostDraw(p.peerId); }
+                if(p.hp > 0) { 
+                    while(hostSaveHands[p.peerId].length < 4) hostDraw(p.peerId); 
+                }
             });
 
+            // 企画書準拠：ライフを失った（ラウンドを終了させた）プレイヤーから再開
             gameState.currentTurnIdx = idx;
             while(gameState.players[gameState.currentTurnIdx].hp <= 0) {
                 gameState.currentTurnIdx = (gameState.currentTurnIdx + gameState.playDirection + gameState.players.length) % gameState.players.length;
             }
-            hostLog("--- 新ラウンド開始 (合計値 0 にリセット) ---");
+            hostLog("--- 新しいラウンドが開始されました (合計値は0にリセット、山札と捨て札は維持) ---");
             hostSync();
         }
 
         function hostCheckOver() {
             let alive = gameState.players.filter(p => p.hp > 0);
             if (alive.length === 1) {
-                hostLog(`👑🏆 ゲーム終了！勝者は 【${alive[0].name}】 です！ 🏆👑`, "log-success");
+                hostLog(`👑🏆 ゲーム終了！勝者は 【${alive[0].name}】 です！！！ 🏆👑`, "log-success");
                 gameState.isOver = true;
                 hostSync();
                 return true;
@@ -352,7 +366,7 @@
             return false;
         }
 
-        // --- 画面表示 ＆ 操作送信 ---
+        // --- クライアントUIおよび操作処理 ---
         function printLog(msg, type) {
             const panel = document.getElementById('log-panel');
             const d = document.createElement('div');
@@ -378,7 +392,7 @@
             let activePlayer = gameState.players[gameState.currentTurnIdx];
             let indicator = document.getElementById('turn-indicator');
             if (activePlayer.peerId === myId) {
-                indicator.innerText = gameState.isAttackMode ? "⚠️ アタック通知！【10】か【Q】を提出してカウンターを仕掛けろ！" : "👉 あなたのターンです！カードを1枚選んでください。";
+                indicator.innerText = gameState.isAttackMode ? "⚠️ アタック発生！【10】か【Q】を1枚出して防いでください！" : "👉 あなたのターンです！カードを1枚選んで出してください。";
             } else {
                 indicator.innerText = `⏳ ${activePlayer.name} の手番を待っています...`;
             }
@@ -402,10 +416,11 @@
         let savedIdx = -1;
         function clickCard(card, idx) {
             if (gameState.isAttackMode && card.text !== '10' && card.text !== 'Q') {
-                alert("アタックされているため、10かQしか場に出せません！"); return;
+                alert("アタックされているため、10またはQしか出せません！"); return;
             }
             if (card.text === '10' && !gameState.isAttackMode) {
-                savedIdx = idx; document.getElementById('modal').style.display = 'flex';
+                savedIdx = idx; 
+                document.getElementById('modal').style.display = 'flex';
             } else {
                 sendActionPayload(idx, 0);
             }
@@ -413,36 +428,29 @@
 
         function select10Effect(val) {
             document.getElementById('modal').style.display = 'none';
-            if(savedIdx !== -1) { sendActionPayload(savedIdx, val); savedIdx = -1; }
+            if(savedIdx !== -1) { 
+                sendActionPayload(savedIdx, val); 
+                savedIdx = -1; 
+            }
         }
 
         function sendActionPayload(idx, option10) {
-            // ホストへ直接または通信経由でアクションを送信
             sendNet({ type: 'ACTION_REQ', peerId: myId, cardIdx: idx, option10: option10 });
         }
 
-        // メッセージ受信時にホストが処理を中継するためのフック
-        client?.on('message', (topic, message) => { /* 予備 */ });
-        // オーバーライド
-        function originalHandle(data) {
-            if (data.type === 'ACTION_REQ') {
-                if (isHost) receiveAction(data.peerId, data.cardIdx, data.option10);
-            }
-        }
-        // ループ処理用ハック
-        setInterval(() => {
-            if(window.lastMsg) {
-                let d = window.lastMsg; window.lastMsg = null;
-                originalHandle(d);
-            }
-        }, 50);
-        
-        // 元の受信関数を少し拡張してリクエストに対応
+        // 通信データ処理用の同期ハック
         const baseHandle = handleNetworkData;
         handleNetworkData = function(data) {
             baseHandle(data);
             if(data.type === 'ACTION_REQ') { window.lastMsg = data; }
         };
+
+        setInterval(() => {
+            if(window.lastMsg) {
+                let d = window.lastMsg; window.lastMsg = null;
+                if (isHost) receiveAction(d.peerId, d.cardIdx, d.option10);
+            }
+        }, 50);
     </script>
 </body>
 </html>
