@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>カウント29 (Online Edition)</title>
-    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <title>カウント29 (Stable Online Edition)</title>
+    <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
     <style>
         body { font-family: 'Arial', sans-serif; background-color: #2c3e50; color: #ecf0f1; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
         h1 { margin-bottom: 5px; color: #f1c40f; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
@@ -39,7 +39,7 @@
 </head>
 <body>
 
-    <h1>カウント29 (オンライン版)</h1>
+    <h1>カウント29 (安定通信オンライン版)</h1>
 
     <div id="setup-container">
         <h3>👥 ルーム接続設定</h3>
@@ -48,13 +48,13 @@
             <input type="text" id="username-input" value="プレイヤー">
         </div>
         <div class="input-group">
-            <label>共通のルームID (何でもOK): </label>
-            <input type="text" id="room-input" value="count29-room-xyz">
+            <label>共通のルームID (適当な英数字): </label>
+            <input type="text" id="room-input" value="room29_test">
             <button id="btn-connect" onclick="connectToRoom()">ルームに入る</button>
         </div>
-        <div id="lobby-status">ルームに接続していません。</div>
+        <div id="lobby-status">ルーム情報を入力してボタンを押してください。</div>
         <div id="member-list" style="margin-top: 10px; color: #f1c40f;"></div>
-        <button id="btn-start" style="display:none; margin-top:15px; background:#2ecc71;" onclick="hostStartGame()">ゲームを開始する</button>
+        <button id="btn-start" style="display:none; margin-top:15px; background:#2ecc71;" onclick="hostStartGame()">全員揃ったのでゲームを開始する</button>
     </div>
 
     <div id="game-container">
@@ -62,7 +62,7 @@
         <div id="board">
             <div style="font-size: 0.9em; color: #bdc3c7;">現在の合計値</div>
             <div id="total-display">0</div>
-            <div id="last-change">対戦相手を待っています...</div>
+            <div id="last-change">ゲームの開始を待っています...</div>
         </div>
         <div id="log-panel"></div>
         <div id="player-hand-container">
@@ -81,18 +81,368 @@
     </div>
 
     <script>
-        // --- 通信用変数 ---
-        let peer = null;
-        let connections = [];
-        let myId = "";
+        let client = null;
+        let myId = "p_" + Math.random().toString(16).substr(2, 8);
         let myName = "";
-        let roomID = "";
+        let topicRoom = "";
         let isHost = false;
-        let memberNames = {};
+        let members = []; // ルームにいる全プレイヤーのリスト
 
-        // --- ゲーム状態変数 ---
         let gameState = {
-            players: [],      // {peerId, name, hp, handCount} の同期用リスト
-            myHand: [],       // 自分だけが見える手札
+            players: [],
+            myHand: [],
             currentTotal: 0,
-            lastAddedValue:
+            lastAddedValue: 0,
+            playDirection: 1,
+            currentTurnIdx: 0,
+            attackerIdx: -1,
+            isAttackMode: false,
+            deckCount: 52,
+            isOver: false
+        };
+
+        let hostDeck = [];
+        let hostDiscard = [];
+        let hostSaveHands = {};
+
+        const SUITS = ['♠', '♥', '♦', '♣'];
+        const VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+
+        function connectToRoom() {
+            myName = document.getElementById('username-input').value.trim();
+            let rawRoom = document.getElementById('room-input').value.trim();
+            if(!myName || !rawRoom) return alert("名前とルームIDを入力してください");
+
+            topicRoom = "count29/rooms/" + rawRoom;
+            document.getElementById('btn-connect').disabled = true;
+            document.getElementById('lobby-status').innerText = "通信サーバー（ブラウザ共有ブローカー）に接続中...";
+
+            // セキュリティ制限に引っかからない、暗号化WebSocket(WSS)経由での接続
+            client = mqtt.connect("wss://broker.emqx.io:8084/mqtt");
+
+            client.on('connect', () => {
+                document.getElementById('lobby-status').innerText = "🟢 サーバー接続完了！ルーム内で待機中...";
+                client.subscribe(topicRoom);
+                
+                // 定期的に自分の存在をアピールして、一番古参のプレイヤーが自動的に「ホスト(親)」を担当する
+                setInterval(() => {
+                    sendNet({ type: 'PING', peerId: myId, name: myName });
+                }, 1000);
+            });
+
+            client.on('message', (topic, message) => {
+                let data = JSON.parse(message.toString());
+                handleNetworkData(data);
+            });
+        }
+
+        function sendNet(data) {
+            if (client && client.connected) {
+                client.publish(topicRoom, JSON.stringify(data));
+            }
+        }
+
+        function handleNetworkData(data) {
+            if (data.type === 'PING') {
+                let existing = members.find(m => m.peerId === data.peerId);
+                if (!existing) {
+                    members.push({ peerId: data.peerId, name: data.name, lastSeen: Date.now() });
+                    updateLobbyUI();
+                } else {
+                    existing.lastSeen = Date.now();
+                }
+                // 生存確認
+                members = members.filter(m => Date.now() - m.lastSeen < 3000);
+                members.sort((a,b) => a.peerId.localeCompare(b.peerId)); // 順序を固定化
+                
+                // 部屋内でID順が一番最初の人が自動でホスト(親権限)を持つ
+                if (members[0].peerId === myId) {
+                    if (!isHost) {
+                        isHost = true;
+                        document.getElementById('btn-start').style.display = "block";
+                        document.getElementById('lobby-status').innerText = "👑 あなたがホスト（部屋の管理人）です。全員揃ったら開始してください。";
+                    }
+                } else {
+                    isHost = false;
+                    document.getElementById('btn-start').style.display = "none";
+                    document.getElementById('lobby-status').innerText = "👥 参加メンバーとして待機中。ホストが開始するのを待っています...";
+                }
+            }
+            else if (data.type === 'START_GAME') {
+                document.getElementById('setup-container').style.display = "none";
+                document.getElementById('game-container').style.display = "block";
+                printLog("📢 ゲームが開始されました！");
+            }
+            else if (data.type === 'SYNC_STATE') {
+                gameState = data.state;
+                gameState.myHand = data.hands[myId] || [];
+                updateGameUI();
+            }
+            else if (data.type === 'LOG') {
+                printLog(data.msg, data.logType);
+            }
+        }
+
+        function updateLobbyUI() {
+            let names = members.map(m => m.name + (m.peerId === myId ? " (あなた)" : ""));
+            document.getElementById('member-list').innerText = "部屋にいる人: " + names.join(', ');
+        }
+
+        // --- ゲーム管理（ホストロジック） ---
+        function hostStartGame() {
+            if(members.length < 2) return alert("対戦には最低2人以上必要です。同じルームIDを別のブラウザやスマホでも入力してください。");
+            
+            sendNet({ type: 'START_GAME' });
+
+            // 山札初期化
+            hostDeck = [];
+            SUITS.forEach(s => {
+                VALUES.forEach((v, idx) => {
+                    hostDeck.push({ suit: s, isRed: (s==='♥'||s==='♦'), text: v, power: (idx+1) });
+                });
+            });
+            // シャッフル
+            for (let i = hostDeck.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [hostDeck[i], hostDeck[j]] = [hostDeck[j], hostDeck[i]];
+            }
+
+            gameState.players = members.map(m => ({ peerId: m.peerId, name: m.name, hp: 3, handCount: 4 }));
+            hostSaveHands = {};
+            gameState.players.forEach(p => {
+                hostSaveHands[p.peerId] = [hostDeck.pop(), hostDeck.pop(), hostDeck.pop(), hostDeck.pop()];
+            });
+
+            gameState.currentTotal = 0;
+            gameState.lastAddedValue = 0;
+            gameState.playDirection = 1;
+            gameState.currentTurnIdx = 0;
+            gameState.isAttackMode = false;
+            gameState.attackerIdx = -1;
+            gameState.isOver = false;
+
+            hostSync();
+            hostLog("🃏 ゲームの準備が整いました。最初のプレイヤーのターンです！");
+        }
+
+        function hostSync() {
+            gameState.deckCount = hostDeck.length;
+            gameState.players.forEach(p => { p.handCount = hostSaveHands[p.peerId].length; });
+            sendNet({ type: 'SYNC_STATE', state: gameState, hands: hostSaveHands });
+        }
+
+        function hostLog(msg, logType = '') {
+            sendNet({ type: 'LOG', msg: msg, logType: logType });
+        }
+
+        function receiveAction(peerId, cardIdx, option10) {
+            if (!isHost) return;
+            let activePlayer = gameState.players[gameState.currentTurnIdx];
+            if (activePlayer.peerId !== peerId) return;
+
+            let currentHand = hostSaveHands[peerId];
+            let card = currentHand.splice(cardIdx, 1)[0];
+            hostDiscard.push(card);
+
+            if (gameState.isAttackMode) {
+                if (card.text === '10') {
+                    gameState.currentTotal = 19;
+                    gameState.lastAddedValue = -10;
+                    gameState.isAttackMode = false;
+                    hostLog(`💥 ${activePlayer.name} は「10」を提出して合計値を19に下げ、アタックを回避！`, "log-success");
+                    hostDraw(peerId);
+                    hostNextTurn();
+                } else if (card.text === 'Q') {
+                    hostLog(`🔄 ${activePlayer.name} は「Q」でアタックを仕掛け返した！`, "log-attack");
+                    let target = gameState.attackerIdx;
+                    gameState.attackerIdx = gameState.currentTurnIdx;
+                    gameState.currentTurnIdx = target;
+                    hostDraw(peerId);
+                    hostSync();
+                }
+                return;
+            }
+
+            let desc = "";
+            if (card.power >= 1 && card.power <= 9) {
+                gameState.currentTotal += card.power;
+                gameState.lastAddedValue = card.power;
+                desc = `+${card.power}`;
+            } else if (card.text === '10') {
+                gameState.currentTotal += option10;
+                gameState.lastAddedValue = option10;
+                desc = `${option10 > 0 ? '+' : ''}${option10}`;
+            } else if (card.text === 'J') {
+                gameState.currentTotal += gameState.lastAddedValue;
+                desc = `直前の値[${gameState.lastAddedValue}]をコピー加算`;
+            } else if (card.text === 'Q') {
+                gameState.playDirection *= -1;
+                desc = `順番を反転`;
+            } else if (card.text === 'K') {
+                desc = `数値をキープして1枚ドロー`;
+                hostDraw(peerId);
+            }
+
+            hostLog(`📝 ${activePlayer.name}: 「${card.suit}${card.text}」 ➔ ${desc} (現在値: ${gameState.currentTotal})`);
+
+            if (gameState.currentTotal > 29) {
+                hostLog(`💀 ${activePlayer.name} が29を超えました！(オーバー29)`, "log-attack");
+                hostReduceLife(gameState.currentTurnIdx);
+            } else if (gameState.currentTotal === 29) {
+                gameState.isAttackMode = true;
+                gameState.attackerIdx = gameState.currentTurnIdx;
+                hostLog(`⚡ ジャスト29アタック！ 次のプレイヤーは【10】か【Q】が必要です！`, "log-attack");
+                do {
+                    gameState.currentTurnIdx = (gameState.currentTurnIdx + gameState.playDirection + gameState.players.length) % gameState.players.length;
+                } while (gameState.players[gameState.currentTurnIdx].hp <= 0);
+                hostDraw(peerId);
+                hostSync();
+            } else {
+                hostDraw(peerId);
+                hostNextTurn();
+            }
+        }
+
+        function hostDraw(peerId) {
+            if (hostDeck.length === 0) {
+                hostDeck = [...hostDiscard]; hostDiscard = [];
+                for(let i=hostDeck.length-1; i>0; i--) { const j=Math.floor(Math.random()*(i+1)); [hostDeck[i],hostDeck[j]]=[hostDeck[j],hostDeck[i]]; }
+                hostLog("🔮 山札リフレッシュ: 既に出されたカードを混ぜ直しました。");
+            }
+            hostSaveHands[peerId].push(hostDeck.pop());
+        }
+
+        function hostNextTurn() {
+            if (hostCheckOver()) return;
+            do {
+                gameState.currentTurnIdx = (gameState.currentTurnIdx + gameState.playDirection + gameState.players.length) % gameState.players.length;
+            } while (gameState.players[gameState.currentTurnIdx].hp <= 0);
+            hostSync();
+        }
+
+        function hostReduceLife(idx) {
+            gameState.players[idx].hp--;
+            if (hostCheckOver()) return;
+
+            gameState.currentTotal = 0;
+            gameState.lastAddedValue = 0;
+            gameState.isAttackMode = false;
+            gameState.attackerIdx = -1;
+
+            gameState.players.forEach(p => {
+                if(p.hp > 0) { while(hostSaveHands[p.peerId].length < 4) hostDraw(p.peerId); }
+            });
+
+            gameState.currentTurnIdx = idx;
+            while(gameState.players[gameState.currentTurnIdx].hp <= 0) {
+                gameState.currentTurnIdx = (gameState.currentTurnIdx + gameState.playDirection + gameState.players.length) % gameState.players.length;
+            }
+            hostLog("--- 新ラウンド開始 (合計値 0 にリセット) ---");
+            hostSync();
+        }
+
+        function hostCheckOver() {
+            let alive = gameState.players.filter(p => p.hp > 0);
+            if (alive.length === 1) {
+                hostLog(`👑🏆 ゲーム終了！勝者は 【${alive[0].name}】 です！ 🏆👑`, "log-success");
+                gameState.isOver = true;
+                hostSync();
+                return true;
+            }
+            return false;
+        }
+
+        // --- 画面表示 ＆ 操作送信 ---
+        function printLog(msg, type) {
+            const panel = document.getElementById('log-panel');
+            const d = document.createElement('div');
+            d.className = `log-entry ${type||''}`; d.innerText = msg;
+            panel.appendChild(d); panel.scrollTop = panel.scrollHeight;
+        }
+
+        function updateGameUI() {
+            document.getElementById('total-display').innerText = gameState.currentTotal;
+            document.getElementById('deck-count').innerText = gameState.deckCount;
+
+            const box = document.getElementById('players-status-box');
+            box.innerHTML = '';
+            gameState.players.forEach((p, idx) => {
+                const el = document.createElement('div');
+                el.className = 'player-status';
+                if(p.hp<=0) el.classList.add('dead');
+                else if(gameState.currentTurnIdx === idx) el.classList.add('active');
+                el.innerHTML = `<strong>${p.name}</strong><br>${p.hp>0?'❤️'.repeat(p.hp):'💀 脱落'}<br>🎴 手札: ${p.handCount}枚`;
+                box.appendChild(el);
+            });
+
+            let activePlayer = gameState.players[gameState.currentTurnIdx];
+            let indicator = document.getElementById('turn-indicator');
+            if (activePlayer.peerId === myId) {
+                indicator.innerText = gameState.isAttackMode ? "⚠️ アタック通知！【10】か【Q】を提出してカウンターを仕掛けろ！" : "👉 あなたのターンです！カードを1枚選んでください。";
+            } else {
+                indicator.innerText = `⏳ ${activePlayer.name} の手番を待っています...`;
+            }
+
+            const handEl = document.getElementById('player-hand');
+            handEl.innerHTML = '';
+            let me = gameState.players.find(p => p.peerId === myId);
+            if (me && me.hp > 0) {
+                gameState.myHand.forEach((card, idx) => {
+                    const cardEl = document.createElement('div');
+                    cardEl.className = `card ${card.isRed?'red':''}`;
+                    cardEl.innerHTML = `<div>${card.text}</div><div class="suit-symbol">${card.suit}</div><div style="text-align:right;">${card.text}</div>`;
+                    cardEl.onclick = () => {
+                        if(activePlayer.peerId === myId && !gameState.isOver) clickCard(card, idx);
+                    };
+                    handEl.appendChild(cardEl);
+                });
+            }
+        }
+
+        let savedIdx = -1;
+        function clickCard(card, idx) {
+            if (gameState.isAttackMode && card.text !== '10' && card.text !== 'Q') {
+                alert("アタックされているため、10かQしか場に出せません！"); return;
+            }
+            if (card.text === '10' && !gameState.isAttackMode) {
+                savedIdx = idx; document.getElementById('modal').style.display = 'flex';
+            } else {
+                sendActionPayload(idx, 0);
+            }
+        }
+
+        function select10Effect(val) {
+            document.getElementById('modal').style.display = 'none';
+            if(savedIdx !== -1) { sendActionPayload(savedIdx, val); savedIdx = -1; }
+        }
+
+        function sendActionPayload(idx, option10) {
+            // ホストへ直接または通信経由でアクションを送信
+            sendNet({ type: 'ACTION_REQ', peerId: myId, cardIdx: idx, option10: option10 });
+        }
+
+        // メッセージ受信時にホストが処理を中継するためのフック
+        client?.on('message', (topic, message) => { /* 予備 */ });
+        // オーバーライド
+        function originalHandle(data) {
+            if (data.type === 'ACTION_REQ') {
+                if (isHost) receiveAction(data.peerId, data.cardIdx, data.option10);
+            }
+        }
+        // ループ処理用ハック
+        setInterval(() => {
+            if(window.lastMsg) {
+                let d = window.lastMsg; window.lastMsg = null;
+                originalHandle(d);
+            }
+        }, 50);
+        
+        // 元の受信関数を少し拡張してリクエストに対応
+        const baseHandle = handleNetworkData;
+        handleNetworkData = function(data) {
+            baseHandle(data);
+            if(data.type === 'ACTION_REQ') { window.lastMsg = data; }
+        };
+    </script>
+</body>
+</html>
